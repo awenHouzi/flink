@@ -70,6 +70,8 @@ class FlinkStatistic(tableStats: Option[TableStats]) extends Statistic {
 
   override def getReferentialConstraints: util.List[RelReferentialConstraint] =
     Collections.emptyList()
+
+  override def getKeys: util.List[ImmutableBitSet] = Collections.emptyList()
 }
 
 /**
@@ -86,6 +88,6 @@ object FlinkStatistic {
     * @param tableStats The table statistics.
     * @return The generated FlinkStatistic
     */
-  def of(tableStats: TableStats): FlinkStatistic = new FlinkStatistic(Some(tableStats))
+  def of(tableStats: TableStats): FlinkStatistic = new FlinkStatistic(Option(tableStats))
 
 }

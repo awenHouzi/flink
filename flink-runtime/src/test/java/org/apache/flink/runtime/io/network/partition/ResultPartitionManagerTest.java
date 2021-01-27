@@ -20,44 +20,54 @@ package org.apache.flink.runtime.io.network.partition;
 
 import org.apache.flink.util.TestLogger;
 
-import org.hamcrest.Matchers;
 import org.junit.Test;
 
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.fail;
+import static org.apache.flink.runtime.io.network.partition.PartitionTestUtils.createPartition;
+import static org.apache.flink.runtime.io.network.partition.PartitionTestUtils.verifyCreateSubpartitionViewThrowsException;
 
-/**
- * Tests for {@link ResultPartitionManager}.
- */
+/** Tests for {@link ResultPartitionManager}. */
 public class ResultPartitionManagerTest extends TestLogger {
 
-	/**
-	 * Tests that {@link ResultPartitionManager#createSubpartitionView(ResultPartitionID, int, BufferAvailabilityListener)}
-	 * would throw {@link PartitionNotFoundException} if this partition was not registered before.
-	 */
-	@Test
-	public void testThrowPartitionNotFoundException() throws Exception {
-		final ResultPartitionManager partitionManager = new ResultPartitionManager();
-		final ResultPartition partition = PartitionTestUtils.createPartition();
-		try {
-			partitionManager.createSubpartitionView(partition.getPartitionId(), 0, new NoOpBufferAvailablityListener());
+    /**
+     * Tests that {@link ResultPartitionManager#createSubpartitionView(ResultPartitionID, int,
+     * BufferAvailabilityListener)} would throw {@link PartitionNotFoundException} if this partition
+     * was not registered before.
+     */
+    @Test
+    public void testThrowPartitionNotFoundException() throws Exception {
+        final ResultPartitionManager partitionManager = new ResultPartitionManager();
+        final ResultPartition partition = createPartition();
 
-			fail("Should throw PartitionNotFoundException for unregistered partition.");
-		} catch (PartitionNotFoundException notFound) {
-			assertThat(partition.getPartitionId(), Matchers.is(notFound.getPartitionId()));
-		}
-	}
+        verifyCreateSubpartitionViewThrowsException(partitionManager, partition.getPartitionId());
+    }
 
-	/**
-	 * Tests {@link ResultPartitionManager#createSubpartitionView(ResultPartitionID, int, BufferAvailabilityListener)}
-	 * successful if this partition was already registered before.
-	 */
-	@Test
-	public void testCreateViewForRegisteredPartition() throws Exception {
-		final ResultPartitionManager partitionManager = new ResultPartitionManager();
-		final ResultPartition partition = PartitionTestUtils.createPartition();
+    /**
+     * Tests {@link ResultPartitionManager#createSubpartitionView(ResultPartitionID, int,
+     * BufferAvailabilityListener)} successful if this partition was already registered before.
+     */
+    @Test
+    public void testCreateViewForRegisteredPartition() throws Exception {
+        final ResultPartitionManager partitionManager = new ResultPartitionManager();
+        final ResultPartition partition = createPartition();
 
-		partitionManager.registerResultPartition(partition);
-		partitionManager.createSubpartitionView(partition.getPartitionId(), 0, new NoOpBufferAvailablityListener());
-	}
+        partitionManager.registerResultPartition(partition);
+        partitionManager.createSubpartitionView(
+                partition.getPartitionId(), 0, new NoOpBufferAvailablityListener());
+    }
+
+    /**
+     * Tests {@link ResultPartitionManager#createSubpartitionView(ResultPartitionID, int,
+     * BufferAvailabilityListener)} would throw a {@link PartitionNotFoundException} if this
+     * partition was already released before.
+     */
+    @Test
+    public void testCreateViewForReleasedPartition() throws Exception {
+        final ResultPartitionManager partitionManager = new ResultPartitionManager();
+        final ResultPartition partition = createPartition();
+
+        partitionManager.registerResultPartition(partition);
+        partitionManager.releasePartition(partition.getPartitionId(), null);
+
+        verifyCreateSubpartitionViewThrowsException(partitionManager, partition.getPartitionId());
+    }
 }

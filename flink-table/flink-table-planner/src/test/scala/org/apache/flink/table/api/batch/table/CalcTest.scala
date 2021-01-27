@@ -20,12 +20,16 @@ package org.apache.flink.table.api.batch.table
 
 import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.api.scala.createTypeInformation
+import org.apache.flink.table.api._
 import org.apache.flink.table.api.batch.table.CalcTest.{MyHashCode, TestCaseClass, WC, giveMeCaseClass}
-import org.apache.flink.table.api.scala._
 import org.apache.flink.table.functions.ScalarFunction
 import org.apache.flink.table.utils.TableTestBase
 import org.apache.flink.table.utils.TableTestUtil._
+
 import org.junit.Test
+
+import java.sql.Timestamp
+import java.time.LocalDateTime
 
 class CalcTest extends TableTestBase {
 
@@ -118,6 +122,47 @@ class CalcTest extends TableTestBase {
   }
 
   @Test
+  def testSelectLiterals(): Unit = {
+    val util = batchTestUtil()
+    val sourceTable = util.addTable[Int]("MyTable", 'a)
+    val resultTable = sourceTable
+      .select("ABC", BigDecimal(1234), Timestamp.valueOf(LocalDateTime.of(1, 1, 1, 1, 1)))
+      .select('*)
+
+    val expected = unaryNode(
+      "DataSetCalc",
+      batchTableNode(sourceTable),
+      term("select", "'ABC' AS _c0", "1234:DECIMAL(1073741823, 0) AS _c1",
+        "0001-01-01 01:01:00:TIMESTAMP(3) AS _c2")
+    )
+
+    util.verifyTable(resultTable, expected)
+  }
+
+  @Test
+  def testGroupByLiteral(): Unit = {
+    val util = batchTestUtil()
+    val sourceTable = util.addTable[Int]("MyTable", 'a)
+    val resultTable = sourceTable
+      .select("ABC", BigDecimal(1234), Timestamp.valueOf(LocalDateTime.of(1, 1, 1, 1, 1)))
+      .groupBy('_c0)
+      .select('*)
+
+    val expected = unaryNode(
+      "DataSetCalc",
+      unaryNode(
+        "DataSetDistinct",
+        unaryNode(
+          "DataSetCalc",
+          batchTableNode(sourceTable),
+          term("select", "'ABC' AS _c0")
+        ), term("distinct", "_c0")),
+      term("select", "'ABC' AS _c0"))
+
+    util.verifyTable(resultTable, expected)
+  }
+
+  @Test
   def testSelectAllFields(): Unit = {
     val util = batchTestUtil()
     val sourceTable = util.addTable[(Int, Long, String, Double)]("MyTable", 'a, 'b, 'c, 'd)
@@ -156,7 +201,7 @@ class CalcTest extends TableTestBase {
 
     util.tableEnv.registerFunction("hashCode", MyHashCode)
 
-    val resultTable = sourceTable.select("hashCode(c), b")
+    val resultTable = sourceTable.select(call("hashCode", $"c"), $"b")
 
     val expected = unaryNode(
       "DataSetCalc",
@@ -305,7 +350,7 @@ class CalcTest extends TableTestBase {
           term("groupBy", "word"),
           term("select", "word", "SUM(frequency) AS EXPR$0")
         ),
-        term("select", "word, EXPR$0 AS frequency"),
+        term("select", "word, EXPR$0"),
         term("where", "=(EXPR$0, 2)")
       )
 
@@ -325,7 +370,7 @@ class CalcTest extends TableTestBase {
       "DataSetCalc",
       batchTableNode(sourceTable),
       term("select", "a", "b"),
-      term("where", "AND(AND(>(a, 0), <(b, 2)), =(MOD(a, 2), 1))")
+      term("where", "AND(>(a, 0), AND(<(b, 2), =(MOD(a, 2), 1)))")
     )
 
     util.verifyTable(resultTable, expected)

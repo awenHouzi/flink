@@ -27,126 +27,131 @@ import org.apache.flink.runtime.state.BackendBuildingException;
 import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.state.KeyedStateHandle;
 import org.apache.flink.runtime.state.LocalRecoveryConfig;
+import org.apache.flink.runtime.state.SnapshotStrategyRunner;
 import org.apache.flink.runtime.state.StreamCompressionDecorator;
 import org.apache.flink.runtime.state.ttl.TtlTimeProvider;
 
 import javax.annotation.Nonnull;
+
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 
+import static org.apache.flink.runtime.state.SnapshotStrategyRunner.ExecutionType.ASYNCHRONOUS;
+import static org.apache.flink.runtime.state.SnapshotStrategyRunner.ExecutionType.SYNCHRONOUS;
+
 /**
- * Builder class for {@link HeapKeyedStateBackend} which handles all necessary initializations and clean ups.
+ * Builder class for {@link HeapKeyedStateBackend} which handles all necessary initializations and
+ * clean ups.
  *
  * @param <K> The data type that the key serializer serializes.
  */
 public class HeapKeyedStateBackendBuilder<K> extends AbstractKeyedStateBackendBuilder<K> {
-	/**
-	 * The configuration of local recovery.
-	 */
-	private final LocalRecoveryConfig localRecoveryConfig;
-	/**
-	 * Factory for state that is organized as priority queue.
-	 */
-	private final HeapPriorityQueueSetFactory priorityQueueSetFactory;
-	/**
-	 * Whether asynchronous snapshot is enabled.
-	 */
-	private final boolean asynchronousSnapshots;
+    /** The configuration of local recovery. */
+    private final LocalRecoveryConfig localRecoveryConfig;
+    /** Factory for state that is organized as priority queue. */
+    private final HeapPriorityQueueSetFactory priorityQueueSetFactory;
+    /** Whether asynchronous snapshot is enabled. */
+    private final boolean asynchronousSnapshots;
 
+    public HeapKeyedStateBackendBuilder(
+            TaskKvStateRegistry kvStateRegistry,
+            TypeSerializer<K> keySerializer,
+            ClassLoader userCodeClassLoader,
+            int numberOfKeyGroups,
+            KeyGroupRange keyGroupRange,
+            ExecutionConfig executionConfig,
+            TtlTimeProvider ttlTimeProvider,
+            @Nonnull Collection<KeyedStateHandle> stateHandles,
+            StreamCompressionDecorator keyGroupCompressionDecorator,
+            LocalRecoveryConfig localRecoveryConfig,
+            HeapPriorityQueueSetFactory priorityQueueSetFactory,
+            boolean asynchronousSnapshots,
+            CloseableRegistry cancelStreamRegistry) {
+        super(
+                kvStateRegistry,
+                keySerializer,
+                userCodeClassLoader,
+                numberOfKeyGroups,
+                keyGroupRange,
+                executionConfig,
+                ttlTimeProvider,
+                stateHandles,
+                keyGroupCompressionDecorator,
+                cancelStreamRegistry);
+        this.localRecoveryConfig = localRecoveryConfig;
+        this.priorityQueueSetFactory = priorityQueueSetFactory;
+        this.asynchronousSnapshots = asynchronousSnapshots;
+    }
 
-	public HeapKeyedStateBackendBuilder(
-		TaskKvStateRegistry kvStateRegistry,
-		TypeSerializer<K> keySerializer,
-		ClassLoader userCodeClassLoader,
-		int numberOfKeyGroups,
-		KeyGroupRange keyGroupRange,
-		ExecutionConfig executionConfig,
-		TtlTimeProvider ttlTimeProvider,
-		@Nonnull Collection<KeyedStateHandle> stateHandles,
-		StreamCompressionDecorator keyGroupCompressionDecorator,
-		LocalRecoveryConfig localRecoveryConfig,
-		HeapPriorityQueueSetFactory priorityQueueSetFactory,
-		boolean asynchronousSnapshots,
-		CloseableRegistry cancelStreamRegistry) {
-		super(
-			kvStateRegistry,
-			keySerializer,
-			userCodeClassLoader,
-			numberOfKeyGroups,
-			keyGroupRange,
-			executionConfig,
-			ttlTimeProvider,
-			stateHandles,
-			keyGroupCompressionDecorator,
-			cancelStreamRegistry);
-		this.localRecoveryConfig = localRecoveryConfig;
-		this.priorityQueueSetFactory = priorityQueueSetFactory;
-		this.asynchronousSnapshots = asynchronousSnapshots;
-	}
+    @Override
+    public HeapKeyedStateBackend<K> build() throws BackendBuildingException {
+        // Map of registered Key/Value states
+        Map<String, StateTable<K, ?, ?>> registeredKVStates = new HashMap<>();
+        // Map of registered priority queue set states
+        Map<String, HeapPriorityQueueSnapshotRestoreWrapper> registeredPQStates = new HashMap<>();
+        CloseableRegistry cancelStreamRegistryForBackend = new CloseableRegistry();
+        HeapSnapshotStrategy<K> snapshotStrategy =
+                initSnapshotStrategy(registeredKVStates, registeredPQStates);
+        InternalKeyContext<K> keyContext =
+                new InternalKeyContextImpl<>(keyGroupRange, numberOfKeyGroups);
 
-	@Override
-	public HeapKeyedStateBackend<K> build() throws BackendBuildingException {
-		// Map of registered Key/Value states
-		Map<String, StateTable<K, ?, ?>> registeredKVStates = new HashMap<>();
-		// Map of registered priority queue set states
-		Map<String, HeapPriorityQueueSnapshotRestoreWrapper> registeredPQStates = new HashMap<>();
-		CloseableRegistry cancelStreamRegistryForBackend = new CloseableRegistry();
-		HeapSnapshotStrategy<K> snapshotStrategy = initSnapshotStrategy(
-			asynchronousSnapshots, registeredKVStates, registeredPQStates, cancelStreamRegistryForBackend);
-		InternalKeyContext<K> keyContext = new InternalKeyContextImpl<>(
-			keyGroupRange,
-			numberOfKeyGroups
-		);
-		HeapRestoreOperation<K> restoreOperation = new HeapRestoreOperation<>(
-			restoreStateHandles,
-			keySerializerProvider,
-			userCodeClassLoader,
-			registeredKVStates,
-			registeredPQStates,
-			cancelStreamRegistry,
-			priorityQueueSetFactory,
-			keyGroupRange,
-			numberOfKeyGroups,
-			snapshotStrategy,
-			keyContext);
-		try {
-			restoreOperation.restore();
-		} catch (Exception e) {
-			throw new BackendBuildingException("Failed when trying to restore heap backend", e);
-		}
-		return new HeapKeyedStateBackend<>(
-			kvStateRegistry,
-			keySerializerProvider.currentSchemaSerializer(),
-			userCodeClassLoader,
-			executionConfig,
-			ttlTimeProvider,
-			cancelStreamRegistryForBackend,
-			keyGroupCompressionDecorator,
-			registeredKVStates,
-			registeredPQStates,
-			localRecoveryConfig,
-			priorityQueueSetFactory,
-			snapshotStrategy,
-			keyContext);
-	}
+        final StateTableFactory<K> stateTableFactory;
+        if (asynchronousSnapshots) {
+            stateTableFactory = CopyOnWriteStateTable::new;
+        } else {
+            stateTableFactory = NestedMapsStateTable::new;
+        }
 
-	private HeapSnapshotStrategy<K> initSnapshotStrategy(
-		boolean asynchronousSnapshots,
-		Map<String, StateTable<K, ?, ?>> registeredKVStates,
-		Map<String, HeapPriorityQueueSnapshotRestoreWrapper> registeredPQStates,
-		CloseableRegistry cancelStreamRegistry) {
-		SnapshotStrategySynchronicityBehavior<K> synchronicityTrait = asynchronousSnapshots ?
-			new AsyncSnapshotStrategySynchronicityBehavior<>() :
-			new SyncSnapshotStrategySynchronicityBehavior<>();
-		return new HeapSnapshotStrategy<>(
-			synchronicityTrait,
-			registeredKVStates,
-			registeredPQStates,
-			keyGroupCompressionDecorator,
-			localRecoveryConfig,
-			keyGroupRange,
-			cancelStreamRegistry,
-			keySerializerProvider);
-	}
+        HeapRestoreOperation<K> restoreOperation =
+                new HeapRestoreOperation<>(
+                        restoreStateHandles,
+                        keySerializerProvider,
+                        userCodeClassLoader,
+                        registeredKVStates,
+                        registeredPQStates,
+                        cancelStreamRegistry,
+                        priorityQueueSetFactory,
+                        keyGroupRange,
+                        numberOfKeyGroups,
+                        stateTableFactory,
+                        keyContext);
+        try {
+            restoreOperation.restore();
+            logger.info("Finished to build heap keyed state-backend.");
+        } catch (Exception e) {
+            throw new BackendBuildingException("Failed when trying to restore heap backend", e);
+        }
+        return new HeapKeyedStateBackend<>(
+                kvStateRegistry,
+                keySerializerProvider.currentSchemaSerializer(),
+                userCodeClassLoader,
+                executionConfig,
+                ttlTimeProvider,
+                cancelStreamRegistryForBackend,
+                keyGroupCompressionDecorator,
+                registeredKVStates,
+                registeredPQStates,
+                localRecoveryConfig,
+                priorityQueueSetFactory,
+                new SnapshotStrategyRunner<>(
+                        "Heap backend snapshot",
+                        snapshotStrategy,
+                        cancelStreamRegistryForBackend,
+                        asynchronousSnapshots ? ASYNCHRONOUS : SYNCHRONOUS),
+                stateTableFactory,
+                keyContext);
+    }
+
+    private HeapSnapshotStrategy<K> initSnapshotStrategy(
+            Map<String, StateTable<K, ?, ?>> registeredKVStates,
+            Map<String, HeapPriorityQueueSnapshotRestoreWrapper> registeredPQStates) {
+        return new HeapSnapshotStrategy<>(
+                registeredKVStates,
+                registeredPQStates,
+                keyGroupCompressionDecorator,
+                localRecoveryConfig,
+                keyGroupRange,
+                keySerializerProvider);
+    }
 }

@@ -24,7 +24,6 @@ import org.apache.flink.core.testutils.OneShotLatch;
 import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.checkpoint.CheckpointType;
-import org.apache.flink.runtime.execution.CancelTaskException;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.state.CheckpointStorageLocationReference;
@@ -33,211 +32,176 @@ import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.operators.StreamSource;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.util.TestLogger;
 
-import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.Timeout;
 
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 /**
- * A test verifying the termination process
- * (synchronous checkpoint and task termination) at the {@link SourceStreamTask}.
+ * A test verifying the termination process (synchronous checkpoint and task termination) at the
+ * {@link SourceStreamTask}.
  */
-public class SourceTaskTerminationTest {
+public class SourceTaskTerminationTest extends TestLogger {
 
-	private static OneShotLatch ready;
-	private static MultiShotLatch runLoopStart;
-	private static MultiShotLatch runLoopEnd;
+    private static OneShotLatch ready;
+    private static MultiShotLatch runLoopStart;
+    private static MultiShotLatch runLoopEnd;
 
-	private static AtomicReference<Throwable> error;
+    @Rule public final Timeout timeoutPerTest = Timeout.seconds(20);
 
-	@Before
-	public void initialize() {
-		ready = new OneShotLatch();
-		runLoopStart = new MultiShotLatch();
-		runLoopEnd = new MultiShotLatch();
-		error = new AtomicReference<>();
+    @Before
+    public void initialize() {
+        ready = new OneShotLatch();
+        runLoopStart = new MultiShotLatch();
+        runLoopEnd = new MultiShotLatch();
+    }
 
-		error.set(null);
-	}
+    @Test
+    public void testStopWithSavepointWithMaxWatermark() throws Exception {
+        stopWithSavepointStreamTaskTestHelper(true);
+    }
 
-	@After
-	public void validate() {
-		validateNoExceptionsWereThrown();
-	}
+    @Test
+    public void testStopWithSavepointWithoutMaxWatermark() throws Exception {
+        stopWithSavepointStreamTaskTestHelper(false);
+    }
 
-	@Test
-	public void terminateShouldBlockDuringCheckpointingAndEmitMaxWatermark() throws Exception {
-		stopWithSavepointStreamTaskTestHelper(true);
-	}
+    private void stopWithSavepointStreamTaskTestHelper(final boolean withMaxWatermark)
+            throws Exception {
+        final long syncSavepointId = 34L;
 
-	@Test
-	public void suspendShouldBlockDuringCheckpointingAndNotEmitMaxWatermark() throws Exception {
-		stopWithSavepointStreamTaskTestHelper(false);
-	}
+        final StreamTaskTestHarness<Long> srcTaskTestHarness = getSourceStreamTaskTestHarness();
+        final Thread executionThread = srcTaskTestHarness.invoke();
+        final StreamTask<Long, ?> srcTask = srcTaskTestHarness.getTask();
 
-	private void stopWithSavepointStreamTaskTestHelper(final boolean expectMaxWatermark) throws Exception {
-		final long syncSavepointId = 34L;
+        ready.await();
 
-		final StreamTaskTestHarness<Long> srcTaskTestHarness = getSourceStreamTaskTestHarness();
-		final Thread executionThread = srcTaskTestHarness.invoke();
-		final StreamTask<Long, ?> srcTask = srcTaskTestHarness.getTask();
+        // step by step let the source thread emit elements
+        emitAndVerifyWatermarkAndElement(srcTaskTestHarness, 1L);
+        emitAndVerifyWatermarkAndElement(srcTaskTestHarness, 2L);
 
-		ready.await();
+        srcTask.triggerCheckpointAsync(
+                        new CheckpointMetaData(31L, 900),
+                        CheckpointOptions.forCheckpointWithDefaultLocation(),
+                        false)
+                .get();
 
-		// step by step let the source thread emit elements
-		emitAndVerifyWatermarkAndElement(srcTaskTestHarness, 1L);
-		emitAndVerifyWatermarkAndElement(srcTaskTestHarness, 2L);
+        verifyCheckpointBarrier(srcTaskTestHarness.getOutput(), 31L);
 
-		emitAndVerifyCheckpoint(srcTaskTestHarness, srcTask, 31L);
+        emitAndVerifyWatermarkAndElement(srcTaskTestHarness, 3L);
 
-		emitAndVerifyWatermarkAndElement(srcTaskTestHarness, 3L);
+        srcTask.triggerCheckpointAsync(
+                        new CheckpointMetaData(syncSavepointId, 900),
+                        new CheckpointOptions(
+                                CheckpointType.SYNC_SAVEPOINT,
+                                CheckpointStorageLocationReference.getDefault()),
+                        withMaxWatermark)
+                .get();
 
-		final Thread syncSavepointThread = triggerSynchronousSavepointFromDifferentThread(srcTask, expectMaxWatermark, syncSavepointId);
+        if (withMaxWatermark) {
+            // if we are in TERMINATE mode, we expect the source task
+            // to emit MAX_WM before the SYNC_SAVEPOINT barrier.
+            verifyWatermark(srcTaskTestHarness.getOutput(), Watermark.MAX_WATERMARK);
+        }
 
-		final SynchronousSavepointLatch syncSavepointFuture = waitForSyncSavepointFutureToBeSet(srcTask);
+        verifyCheckpointBarrier(srcTaskTestHarness.getOutput(), syncSavepointId);
 
-		if (expectMaxWatermark) {
-			// if we are in TERMINATE mode, we expect the source task
-			// to emit MAX_WM before the SYNC_SAVEPOINT barrier.
-			verifyWatermark(srcTaskTestHarness.getOutput(), Watermark.MAX_WATERMARK);
-		}
+        waitForSynchronousSavepointIdToBeSet(srcTask);
 
-		verifyCheckpointBarrier(srcTaskTestHarness.getOutput(), syncSavepointId);
+        assertTrue(srcTask.getSynchronousSavepointId().isPresent());
 
-		assertFalse(syncSavepointFuture.isCompleted());
-		assertTrue(syncSavepointFuture.isWaiting());
+        srcTask.notifyCheckpointCompleteAsync(syncSavepointId).get();
+        assertFalse(srcTask.getSynchronousSavepointId().isPresent());
 
-		srcTask.notifyCheckpointComplete(syncSavepointId);
-		assertTrue(syncSavepointFuture.isCompleted());
+        executionThread.join();
+    }
 
-		syncSavepointThread.join();
-		executionThread.join();
-	}
+    private StreamTaskTestHarness<Long> getSourceStreamTaskTestHarness() {
+        final StreamTaskTestHarness<Long> testHarness =
+                new StreamTaskTestHarness<>(SourceStreamTask::new, BasicTypeInfo.LONG_TYPE_INFO);
 
-	private void validateNoExceptionsWereThrown() {
-		if (error.get() != null && !(error.get() instanceof CancelTaskException)) {
-			fail(error.get().getMessage());
-		}
-	}
+        final LockStepSourceWithOneWmPerElement source = new LockStepSourceWithOneWmPerElement();
 
-	private Thread triggerSynchronousSavepointFromDifferentThread(
-			final StreamTask<Long, ?> task,
-			final boolean advanceToEndOfEventTime,
-			final long syncSavepointId) {
-		final Thread checkpointingThread = new Thread(() -> {
-			try {
-				task.triggerCheckpoint(
-						new CheckpointMetaData(syncSavepointId, 900),
-						new CheckpointOptions(CheckpointType.SYNC_SAVEPOINT, CheckpointStorageLocationReference.getDefault()),
-						advanceToEndOfEventTime);
-			} catch (Exception e) {
-				error.set(e);
-			}
-		});
-		checkpointingThread.start();
+        testHarness.setupOutputForSingletonOperatorChain();
+        testHarness.getExecutionConfig().setLatencyTrackingInterval(-1);
 
-		return checkpointingThread;
+        StreamConfig streamConfig = testHarness.getStreamConfig();
+        StreamSource<Long, ?> sourceOperator = new StreamSource<>(source);
+        streamConfig.setStreamOperator(sourceOperator);
+        streamConfig.setOperatorID(new OperatorID());
+        return testHarness;
+    }
 
-	}
+    private void waitForSynchronousSavepointIdToBeSet(final StreamTask streamTaskUnderTest)
+            throws InterruptedException {
+        while (!streamTaskUnderTest.getSynchronousSavepointId().isPresent()) {
+            Thread.sleep(10L);
+        }
+    }
 
-	private void emitAndVerifyCheckpoint(
-			final StreamTaskTestHarness<Long> srcTaskTestHarness,
-			final StreamTask<Long, ?> srcTask,
-			final long checkpointId) throws Exception {
+    private void emitAndVerifyWatermarkAndElement(
+            final StreamTaskTestHarness<Long> srcTaskTestHarness, final long expectedElement)
+            throws InterruptedException {
 
-		srcTask.triggerCheckpoint(
-				new CheckpointMetaData(checkpointId, 900),
-				CheckpointOptions.forCheckpointWithDefaultLocation(),
-				false);
-		verifyCheckpointBarrier(srcTaskTestHarness.getOutput(), checkpointId);
-	}
+        runLoopStart.trigger();
+        verifyWatermark(srcTaskTestHarness.getOutput(), new Watermark(expectedElement));
+        verifyNextElement(srcTaskTestHarness.getOutput(), expectedElement);
+        runLoopEnd.await();
+    }
 
-	private StreamTaskTestHarness<Long> getSourceStreamTaskTestHarness() {
-		final StreamTaskTestHarness<Long> testHarness = new StreamTaskTestHarness<>(
-				SourceStreamTask::new,
-				BasicTypeInfo.LONG_TYPE_INFO);
+    private void verifyNextElement(BlockingQueue<Object> output, long expectedElement)
+            throws InterruptedException {
+        Object next = output.take();
+        assertTrue("next element is not an event", next instanceof StreamRecord);
+        assertEquals(
+                "wrong event", expectedElement, ((StreamRecord<Long>) next).getValue().longValue());
+    }
 
-		final LockStepSourceWithOneWmPerElement source = new LockStepSourceWithOneWmPerElement();
+    private void verifyWatermark(BlockingQueue<Object> output, Watermark expectedWatermark)
+            throws InterruptedException {
+        Object next = output.take();
+        assertTrue("next element is not a watermark", next instanceof Watermark);
+        assertEquals("wrong watermark", expectedWatermark, next);
+    }
 
-		testHarness.setupOutputForSingletonOperatorChain();
-		testHarness.getExecutionConfig().setLatencyTrackingInterval(-1);
+    private void verifyCheckpointBarrier(BlockingQueue<Object> output, long checkpointId)
+            throws InterruptedException {
+        Object next = output.take();
+        assertTrue("next element is not a checkpoint barrier", next instanceof CheckpointBarrier);
+        assertEquals("wrong checkpoint id", checkpointId, ((CheckpointBarrier) next).getId());
+    }
 
-		StreamConfig streamConfig = testHarness.getStreamConfig();
-		StreamSource<Long, ?> sourceOperator = new StreamSource<>(source);
-		streamConfig.setStreamOperator(sourceOperator);
-		streamConfig.setOperatorID(new OperatorID());
-		return testHarness;
-	}
+    private static class LockStepSourceWithOneWmPerElement implements SourceFunction<Long> {
 
-	private SynchronousSavepointLatch waitForSyncSavepointFutureToBeSet(final StreamTask streamTaskUnderTest) throws InterruptedException {
-		final SynchronousSavepointLatch syncSavepointFuture = streamTaskUnderTest.getSynchronousSavepointLatch();
-		while (!syncSavepointFuture.isWaiting()) {
-			Thread.sleep(10L);
+        private volatile boolean isRunning;
 
-			validateNoExceptionsWereThrown();
-		}
-		return syncSavepointFuture;
-	}
+        @Override
+        public void run(SourceContext<Long> ctx) throws Exception {
+            long element = 1L;
+            isRunning = true;
 
-	private void emitAndVerifyWatermarkAndElement(
-			final StreamTaskTestHarness<Long> srcTaskTestHarness,
-			final long expectedElement) throws InterruptedException {
+            ready.trigger();
 
-		runLoopStart.trigger();
-		verifyWatermark(srcTaskTestHarness.getOutput(), new Watermark(expectedElement));
-		verifyNextElement(srcTaskTestHarness.getOutput(), expectedElement);
-		runLoopEnd.await();
-	}
+            while (isRunning) {
+                runLoopStart.await();
+                ctx.emitWatermark(new Watermark(element));
+                ctx.collect(element++);
+                runLoopEnd.trigger();
+            }
+        }
 
-	private void verifyNextElement(BlockingQueue<Object> output, long expectedElement) throws InterruptedException {
-		Object next = output.take();
-		assertTrue("next element is not an event", next instanceof StreamRecord);
-		assertEquals("wrong event", expectedElement, ((StreamRecord<Long>) next).getValue().longValue());
-	}
-
-	private void verifyWatermark(BlockingQueue<Object> output, Watermark expectedWatermark) throws InterruptedException {
-		Object next = output.take();
-		assertTrue("next element is not a watermark", next instanceof Watermark);
-		assertEquals("wrong watermark", expectedWatermark, next);
-	}
-
-	private void verifyCheckpointBarrier(BlockingQueue<Object> output, long checkpointId) throws InterruptedException {
-		Object next = output.take();
-		assertTrue("next element is not a checkpoint barrier", next instanceof CheckpointBarrier);
-		assertEquals("wrong checkpoint id", checkpointId, ((CheckpointBarrier) next).getId());
-	}
-
-	private static class LockStepSourceWithOneWmPerElement implements SourceFunction<Long> {
-
-		private volatile boolean isRunning;
-
-		@Override
-		public void run(SourceContext<Long> ctx) throws Exception {
-			long element = 1L;
-			isRunning = true;
-
-			ready.trigger();
-
-			while (isRunning) {
-				runLoopStart.await();
-				ctx.emitWatermark(new Watermark(element));
-				ctx.collect(element++);
-				runLoopEnd.trigger();
-			}
-		}
-
-		@Override
-		public void cancel() {
-			isRunning = false;
-			runLoopStart.trigger();
-		}
-	}
+        @Override
+        public void cancel() {
+            isRunning = false;
+            runLoopStart.trigger();
+        }
+    }
 }

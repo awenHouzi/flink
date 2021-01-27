@@ -28,52 +28,56 @@ import java.util.Objects;
 /**
  * An unresolved reference to a field, table, or local reference.
  *
- * <p>This is a purely API facing expression that will be resolved into
- * {@link FieldReferenceExpression}, {@link LocalReferenceExpression},
- * or {@link TableReferenceExpression}.
+ * <p>This is a purely API facing expression that will be resolved into {@link
+ * FieldReferenceExpression}, {@link LocalReferenceExpression}, or {@link TableReferenceExpression}.
  */
 @PublicEvolving
 public final class UnresolvedReferenceExpression implements Expression {
 
-	private final String name;
+    private final String name;
 
-	public UnresolvedReferenceExpression(String name) {
-		this.name = Preconditions.checkNotNull(name);
-	}
+    UnresolvedReferenceExpression(String name) {
+        this.name = Preconditions.checkNotNull(name);
+    }
 
-	public String getName() {
-		return name;
-	}
+    public String getName() {
+        return name;
+    }
 
-	@Override
-	public List<Expression> getChildren() {
-		return Collections.emptyList();
-	}
+    @Override
+    public String asSummaryString() {
+        return name;
+    }
 
-	@Override
-	public <R> R accept(ExpressionVisitor<R> visitor) {
-		return visitor.visit(this);
-	}
+    @Override
+    public List<Expression> getChildren() {
+        return Collections.emptyList();
+    }
 
-	@Override
-	public boolean equals(Object o) {
-		if (this == o) {
-			return true;
-		}
-		if (o == null || getClass() != o.getClass()) {
-			return false;
-		}
-		UnresolvedReferenceExpression that = (UnresolvedReferenceExpression) o;
-		return Objects.equals(name, that.name);
-	}
+    @Override
+    public <R> R accept(ExpressionVisitor<R> visitor) {
+        return visitor.visit(this);
+    }
 
-	@Override
-	public int hashCode() {
-		return Objects.hash(name);
-	}
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+        UnresolvedReferenceExpression that = (UnresolvedReferenceExpression) o;
+        return Objects.equals(name, that.name);
+    }
 
-	@Override
-	public String toString() {
-		return name;
-	}
+    @Override
+    public int hashCode() {
+        return Objects.hash(name);
+    }
+
+    @Override
+    public String toString() {
+        return asSummaryString();
+    }
 }

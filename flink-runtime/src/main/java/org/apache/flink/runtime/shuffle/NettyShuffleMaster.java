@@ -21,37 +21,41 @@ package org.apache.flink.runtime.shuffle;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.shuffle.NettyShuffleDescriptor.LocalExecutionPartitionConnectionInfo;
 import org.apache.flink.runtime.shuffle.NettyShuffleDescriptor.NetworkPartitionConnectionInfo;
+import org.apache.flink.runtime.shuffle.NettyShuffleDescriptor.PartitionConnectionInfo;
 
 import java.util.concurrent.CompletableFuture;
 
-/**
- * Default {@link ShuffleMaster} for netty and local file based shuffle implementation.
- */
+/** Default {@link ShuffleMaster} for netty and local file based shuffle implementation. */
 public enum NettyShuffleMaster implements ShuffleMaster<NettyShuffleDescriptor> {
-	INSTANCE;
+    INSTANCE;
 
-	@Override
-	public CompletableFuture<NettyShuffleDescriptor> registerPartitionWithProducer(
-			PartitionDescriptor partitionDescriptor,
-			ProducerDescriptor producerDescriptor) {
+    @Override
+    public CompletableFuture<NettyShuffleDescriptor> registerPartitionWithProducer(
+            PartitionDescriptor partitionDescriptor, ProducerDescriptor producerDescriptor) {
 
-		ResultPartitionID resultPartitionID = new ResultPartitionID(
-			partitionDescriptor.getPartitionId(),
-			producerDescriptor.getProducerExecutionId());
+        ResultPartitionID resultPartitionID =
+                new ResultPartitionID(
+                        partitionDescriptor.getPartitionId(),
+                        producerDescriptor.getProducerExecutionId());
 
-		NettyShuffleDescriptor shuffleDeploymentDescriptor = new NettyShuffleDescriptor(
-			producerDescriptor.getProducerLocation(),
-			createConnectionInfo(producerDescriptor, partitionDescriptor.getConnectionIndex()),
-			resultPartitionID);
+        NettyShuffleDescriptor shuffleDeploymentDescriptor =
+                new NettyShuffleDescriptor(
+                        producerDescriptor.getProducerLocation(),
+                        createConnectionInfo(
+                                producerDescriptor, partitionDescriptor.getConnectionIndex()),
+                        resultPartitionID);
 
-		return CompletableFuture.completedFuture(shuffleDeploymentDescriptor);
-	}
+        return CompletableFuture.completedFuture(shuffleDeploymentDescriptor);
+    }
 
-	private static NettyShuffleDescriptor.PartitionConnectionInfo createConnectionInfo(
-			ProducerDescriptor producerDescriptor,
-			int connectionIndex) {
-		return producerDescriptor.getDataPort() >= 0 ?
-			NetworkPartitionConnectionInfo.fromProducerDescriptor(producerDescriptor, connectionIndex) :
-			LocalExecutionPartitionConnectionInfo.INSTANCE;
-	}
+    @Override
+    public void releasePartitionExternally(ShuffleDescriptor shuffleDescriptor) {}
+
+    private static PartitionConnectionInfo createConnectionInfo(
+            ProducerDescriptor producerDescriptor, int connectionIndex) {
+        return producerDescriptor.getDataPort() >= 0
+                ? NetworkPartitionConnectionInfo.fromProducerDescriptor(
+                        producerDescriptor, connectionIndex)
+                : LocalExecutionPartitionConnectionInfo.INSTANCE;
+    }
 }

@@ -18,92 +18,135 @@
 
 package org.apache.flink.streaming.runtime.io;
 
+import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.event.TaskEvent;
 import org.apache.flink.runtime.io.network.api.EndOfPartitionEvent;
 import org.apache.flink.runtime.io.network.partition.consumer.BufferOrEvent;
+import org.apache.flink.runtime.io.network.partition.consumer.IndexedInputGate;
+import org.apache.flink.runtime.io.network.partition.consumer.InputChannel;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
-/**
- * Mock {@link InputGate}.
- */
-public class MockInputGate extends InputGate {
+/** Mock {@link InputGate}. */
+public class MockInputGate extends IndexedInputGate {
 
-	private final int pageSize;
+    private final int numberOfChannels;
 
-	private final int numberOfChannels;
+    private final Queue<BufferOrEvent> bufferOrEvents;
 
-	private final Queue<BufferOrEvent> bufferOrEvents;
+    private final boolean[] closed;
 
-	private final boolean[] closed;
+    private final boolean finishAfterLastBuffer;
 
-	private int closedChannels;
+    private ArrayList<Integer> lastUnblockedChannels = new ArrayList<>();
 
-	public MockInputGate(int pageSize, int numberOfChannels, List<BufferOrEvent> bufferOrEvents) {
-		this.pageSize = pageSize;
-		this.numberOfChannels = numberOfChannels;
-		this.bufferOrEvents = new ArrayDeque<BufferOrEvent>(bufferOrEvents);
-		this.closed = new boolean[numberOfChannels];
+    public MockInputGate(int numberOfChannels, List<BufferOrEvent> bufferOrEvents) {
+        this(numberOfChannels, bufferOrEvents, true);
+    }
 
-		isAvailable = AVAILABLE;
-	}
+    public MockInputGate(
+            int numberOfChannels,
+            List<BufferOrEvent> bufferOrEvents,
+            boolean finishAfterLastBuffer) {
+        this.numberOfChannels = numberOfChannels;
+        this.bufferOrEvents = new ArrayDeque<BufferOrEvent>(bufferOrEvents);
+        this.closed = new boolean[numberOfChannels];
+        this.finishAfterLastBuffer = finishAfterLastBuffer;
 
-	@Override
-	public int getPageSize() {
-		return pageSize;
-	}
+        availabilityHelper.resetAvailable();
+    }
 
-	@Override
-	public void setup() {
-	}
+    @Override
+    public void setup() {}
 
-	@Override
-	public int getNumberOfInputChannels() {
-		return numberOfChannels;
-	}
+    @Override
+    public CompletableFuture<Void> getStateConsumedFuture() {
+        return CompletableFuture.completedFuture(null);
+    }
 
-	@Override
-	public boolean isFinished() {
-		return bufferOrEvents.isEmpty();
-	}
+    @Override
+    public void finishReadRecoveredState() {}
 
-	@Override
-	public Optional<BufferOrEvent> getNext() {
-		BufferOrEvent next = bufferOrEvents.poll();
-		if (next == null) {
-			return Optional.empty();
-		}
+    @Override
+    public void requestPartitions() {}
 
-		int channelIdx = next.getChannelIndex();
-		if (closed[channelIdx]) {
-			throw new RuntimeException("Inconsistent: Channel " + channelIdx
-				+ " has data even though it is already closed.");
-		}
-		if (next.isEvent() && next.getEvent() instanceof EndOfPartitionEvent) {
-			closed[channelIdx] = true;
-			closedChannels++;
-		}
-		return Optional.of(next);
-	}
+    @Override
+    public int getNumberOfInputChannels() {
+        return numberOfChannels;
+    }
 
-	@Override
-	public Optional<BufferOrEvent> pollNext() {
-		return getNext();
-	}
+    @Override
+    public InputChannel getChannel(int channelIndex) {
+        throw new UnsupportedOperationException();
+    }
 
-	@Override
-	public void requestPartitions() {
-	}
+    @Override
+    public List<InputChannelInfo> getChannelInfos() {
+        return IntStream.range(0, numberOfChannels)
+                .mapToObj(channelIndex -> new InputChannelInfo(0, channelIndex))
+                .collect(Collectors.toList());
+    }
 
-	@Override
-	public void sendTaskEvent(TaskEvent event) {
-	}
+    @Override
+    public boolean isFinished() {
+        return finishAfterLastBuffer && bufferOrEvents.isEmpty();
+    }
 
-	@Override
-	public void close() {
-	}
+    @Override
+    public Optional<BufferOrEvent> getNext() {
+        BufferOrEvent next = bufferOrEvents.poll();
+        if (!finishAfterLastBuffer && bufferOrEvents.isEmpty()) {
+            availabilityHelper.resetUnavailable();
+        }
+        if (next == null) {
+            return Optional.empty();
+        }
+
+        int channelIdx = next.getChannelInfo().getInputChannelIdx();
+        if (closed[channelIdx]) {
+            throw new RuntimeException(
+                    "Inconsistent: Channel "
+                            + channelIdx
+                            + " has data even though it is already closed.");
+        }
+        if (next.isEvent() && next.getEvent() instanceof EndOfPartitionEvent) {
+            closed[channelIdx] = true;
+        }
+        return Optional.of(next);
+    }
+
+    @Override
+    public Optional<BufferOrEvent> pollNext() {
+        return getNext();
+    }
+
+    @Override
+    public void sendTaskEvent(TaskEvent event) {}
+
+    @Override
+    public void resumeConsumption(InputChannelInfo channelInfo) {
+        lastUnblockedChannels.add(channelInfo.getInputChannelIdx());
+    }
+
+    public ArrayList<Integer> getAndResetLastUnblockedChannels() {
+        ArrayList<Integer> unblockedChannels = lastUnblockedChannels;
+        lastUnblockedChannels = new ArrayList<>();
+        return unblockedChannels;
+    }
+
+    @Override
+    public void close() {}
+
+    @Override
+    public int getGateIndex() {
+        return 0;
+    }
 }

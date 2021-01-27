@@ -18,14 +18,9 @@
 
 package org.apache.flink.ml.api.core;
 
-import org.apache.flink.ml.api.misc.param.ParamInfo;
 import org.apache.flink.ml.api.misc.param.WithParams;
-import org.apache.flink.ml.util.param.ExtractParamInfosUtil;
 
 import java.io.Serializable;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 
 /**
  * Base class for a stage in a pipeline. The interface is only a concept, and does not have any
@@ -36,21 +31,16 @@ import java.util.Map;
  * restoration in Pipeline.
  *
  * @param <T> The class type of the PipelineStage implementation itself, used by {@link
- *            org.apache.flink.ml.api.misc.param.WithParams}
+ *     org.apache.flink.ml.api.misc.param.WithParams}
  * @see WithParams
  */
 interface PipelineStage<T extends PipelineStage<T>> extends WithParams<T>, Serializable {
 
-	default String toJson() {
-		return getParams().toJson();
-	}
+    default String toJson() {
+        return getParams().toJson();
+    }
 
-	default void loadJson(String json) {
-		List<ParamInfo> paramInfos = ExtractParamInfosUtil.extractParamInfos(this);
-		Map<String, Class<?>> classMap = new HashMap<>();
-		for (ParamInfo i : paramInfos) {
-			classMap.put(i.getName(), i.getValueClass());
-		}
-		getParams().loadJson(json, classMap);
-	}
+    default void loadJson(String json) {
+        getParams().loadJson(json);
+    }
 }

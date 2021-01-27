@@ -25,36 +25,34 @@ import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonPro
 
 import javax.annotation.Nullable;
 
-/**
- * {@link RequestBody} for stopping a job with a savepoint.
- */
+/** {@link RequestBody} for stopping a job with a savepoint. */
 public class StopWithSavepointRequestBody implements RequestBody {
 
-	public static final String FIELD_NAME_TARGET_DIRECTORY = "targetDirectory";
+    public static final String FIELD_NAME_TARGET_DIRECTORY = "targetDirectory";
 
-	private static final String FIELD_NAME_END_OF_EVENT_TIME = "endOfEventTime";
+    private static final String FIELD_NAME_DRAIN = "drain";
 
-	@JsonProperty(FIELD_NAME_TARGET_DIRECTORY)
-	@Nullable
-	private final String targetDirectory;
+    @JsonProperty(FIELD_NAME_TARGET_DIRECTORY)
+    @Nullable
+    private final String targetDirectory;
 
-	@JsonProperty(FIELD_NAME_END_OF_EVENT_TIME)
-	private final boolean endOfEventTime;
+    @JsonProperty(FIELD_NAME_DRAIN)
+    private final boolean drain;
 
-	@JsonCreator
-	public StopWithSavepointRequestBody(
-			@Nullable @JsonProperty(FIELD_NAME_TARGET_DIRECTORY) final String targetDirectory,
-			@JsonProperty(value = FIELD_NAME_END_OF_EVENT_TIME, defaultValue = "false") final boolean endOfEventTime) {
-		this.targetDirectory = targetDirectory;
-		this.endOfEventTime = endOfEventTime;
-	}
+    @JsonCreator
+    public StopWithSavepointRequestBody(
+            @Nullable @JsonProperty(FIELD_NAME_TARGET_DIRECTORY) final String targetDirectory,
+            @JsonProperty(value = FIELD_NAME_DRAIN, defaultValue = "false") final boolean drain) {
+        this.targetDirectory = targetDirectory;
+        this.drain = drain;
+    }
 
-	@Nullable
-	public String getTargetDirectory() {
-		return targetDirectory;
-	}
+    @Nullable
+    public String getTargetDirectory() {
+        return targetDirectory;
+    }
 
-	public boolean shouldAdvanceToEndOfEventTime() {
-		return endOfEventTime;
-	}
+    public boolean shouldDrain() {
+        return drain;
+    }
 }

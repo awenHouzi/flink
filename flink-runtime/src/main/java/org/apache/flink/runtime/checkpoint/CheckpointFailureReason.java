@@ -18,57 +18,90 @@
 
 package org.apache.flink.runtime.checkpoint;
 
-/**
- * Various reasons why a checkpoint was failure.
- */
+/** Various reasons why a checkpoint was failure. */
 public enum CheckpointFailureReason {
+    PERIODIC_SCHEDULER_SHUTDOWN(true, "Periodic checkpoint scheduler is shut down."),
 
-	COORDINATOR_SHUTDOWN("Checkpoint coordinator is shut down."),
+    TOO_MANY_CONCURRENT_CHECKPOINTS(
+            true, "The maximum number of concurrent checkpoints is exceeded"),
 
-	PERIODIC_SCHEDULER_SHUTDOWN("Periodic checkpoint scheduler is shut down."),
+    TOO_MANY_CHECKPOINT_REQUESTS(true, "The maximum number of queued checkpoint requests exceeded"),
 
-	ALREADY_QUEUED("Another checkpoint request has already been queued."),
+    MINIMUM_TIME_BETWEEN_CHECKPOINTS(
+            true,
+            "The minimum time between checkpoints is still pending. "
+                    + "Checkpoint will be triggered after the minimum time."),
 
-	TOO_MANY_CONCURRENT_CHECKPOINTS("The maximum number of concurrent checkpoints is exceeded"),
+    NOT_ALL_REQUIRED_TASKS_RUNNING(true, "Not all required tasks are currently running."),
 
-	MINIMUM_TIME_BETWEEN_CHECKPOINTS("The minimum time between checkpoints is still pending. " +
-			"Checkpoint will be triggered after the minimum time."),
+    EXCEPTION(true, "An Exception occurred while triggering the checkpoint."),
 
-	NOT_ALL_REQUIRED_TASKS_RUNNING("Not all required tasks are currently running."),
+    CHECKPOINT_ASYNC_EXCEPTION(false, "Asynchronous task checkpoint failed."),
 
-	EXCEPTION("An Exception occurred while triggering the checkpoint."),
+    CHECKPOINT_EXPIRED(false, "Checkpoint expired before completing."),
 
-	EXPIRED("The checkpoint expired before triggering was complete"),
+    CHECKPOINT_SUBSUMED(false, "Checkpoint has been subsumed."),
 
-	CHECKPOINT_EXPIRED("Checkpoint expired before completing."),
+    CHECKPOINT_DECLINED(false, "Checkpoint was declined."),
 
-	CHECKPOINT_SUBSUMED("Checkpoint has been subsumed."),
+    CHECKPOINT_DECLINED_TASK_NOT_READY(false, "Checkpoint was declined (tasks not ready)"),
 
-	CHECKPOINT_DECLINED("Checkpoint was declined (tasks not ready)."),
+    CHECKPOINT_DECLINED_TASK_CLOSING(
+            false, "Checkpoint was declined (task's operators partially closed)"),
 
-	CHECKPOINT_COORDINATOR_SHUTDOWN("CheckpointCoordinator shutdown."),
+    CHECKPOINT_DECLINED_TASK_NOT_CHECKPOINTING(false, "Task does not support checkpointing"),
 
-	CHECKPOINT_COORDINATOR_SUSPEND("Checkpoint Coordinator is suspending."),
+    CHECKPOINT_DECLINED_SUBSUMED(
+            false, "Checkpoint was canceled because a barrier from newer checkpoint was received."),
 
-	JOB_FAILURE("The job has failed."),
+    CHECKPOINT_DECLINED_ON_CANCELLATION_BARRIER(
+            false, "Task received cancellation from one of its inputs"),
 
-	JOB_FAILOVER_REGION("FailoverRegion is restarting."),
+    CHECKPOINT_DECLINED_ALIGNMENT_LIMIT_EXCEEDED(
+            false,
+            "The checkpoint alignment phase needed to buffer more than the configured maximum bytes"),
 
-	TASK_CHECKPOINT_FAILURE("Task local checkpoint failure."),
+    CHECKPOINT_DECLINED_INPUT_END_OF_STREAM(
+            false, "Checkpoint was declined because one input stream is finished"),
 
-	FINALIZE_CHECKPOINT_FAILURE("Failure to finalize checkpoint."),
+    CHECKPOINT_COORDINATOR_SHUTDOWN(false, "CheckpointCoordinator shutdown."),
 
-	TRIGGER_CHECKPOINT_FAILURE("Trigger checkpoint failure.");
+    CHECKPOINT_COORDINATOR_SUSPEND(false, "Checkpoint Coordinator is suspending."),
 
-	// ------------------------------------------------------------------------
+    JOB_FAILURE(false, "The job has failed."),
 
-	private final String message;
+    JOB_FAILOVER_REGION(false, "FailoverRegion is restarting."),
 
-	CheckpointFailureReason(String message) {
-		this.message = message;
-	}
+    TASK_FAILURE(false, "Task has failed."),
 
-	public String message() {
-		return message;
-	}
+    TASK_CHECKPOINT_FAILURE(false, "Task local checkpoint failure."),
+
+    UNKNOWN_TASK_CHECKPOINT_NOTIFICATION_FAILURE(
+            false, "Unknown task for the checkpoint to notify."),
+
+    FINALIZE_CHECKPOINT_FAILURE(false, "Failure to finalize checkpoint."),
+
+    TRIGGER_CHECKPOINT_FAILURE(false, "Trigger checkpoint failure.");
+
+    // ------------------------------------------------------------------------
+
+    private final boolean preFlight;
+    private final String message;
+
+    CheckpointFailureReason(boolean isPreFlight, String message) {
+        this.preFlight = isPreFlight;
+        this.message = message;
+    }
+
+    public String message() {
+        return message;
+    }
+
+    /**
+     * @return true if this value indicates a failure reason happening before a checkpoint is passed
+     *     to a job's tasks.
+     */
+    public boolean isPreFlight() {
+        return preFlight;
+    }
 }

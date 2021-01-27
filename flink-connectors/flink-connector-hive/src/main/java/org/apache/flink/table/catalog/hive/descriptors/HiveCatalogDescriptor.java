@@ -26,36 +26,46 @@ import org.apache.flink.util.StringUtils;
 
 import java.util.Map;
 
-import static org.apache.flink.table.catalog.hive.descriptors.HiveCatalogValidator.CATALOG_HIVE_SITE_PATH;
+import static org.apache.flink.table.catalog.hive.descriptors.HiveCatalogValidator.CATALOG_HIVE_CONF_DIR;
+import static org.apache.flink.table.catalog.hive.descriptors.HiveCatalogValidator.CATALOG_HIVE_VERSION;
 import static org.apache.flink.table.catalog.hive.descriptors.HiveCatalogValidator.CATALOG_TYPE_VALUE_HIVE;
 
-/**
- * Catalog descriptor for {@link HiveCatalog}.
- */
+/** Catalog descriptor for {@link HiveCatalog}. */
 public class HiveCatalogDescriptor extends CatalogDescriptor {
 
-	private String hiveSitePath;
+    private String hiveSitePath;
+    private String hiveVersion;
 
-	// TODO : set default database
-	public HiveCatalogDescriptor() {
-		super(CATALOG_TYPE_VALUE_HIVE, 1);
-	}
+    // TODO : set default database
+    public HiveCatalogDescriptor() {
+        super(CATALOG_TYPE_VALUE_HIVE, 1);
+    }
 
-	public HiveCatalogDescriptor hiveSitePath(String hiveSitePath) {
-		Preconditions.checkArgument(!StringUtils.isNullOrWhitespaceOnly(hiveSitePath));
-		this.hiveSitePath = hiveSitePath;
+    public HiveCatalogDescriptor hiveSitePath(String hiveSitePath) {
+        Preconditions.checkArgument(!StringUtils.isNullOrWhitespaceOnly(hiveSitePath));
+        this.hiveSitePath = hiveSitePath;
 
-		return this;
-	}
+        return this;
+    }
 
-	@Override
-	protected Map<String, String> toCatalogProperties() {
-		final DescriptorProperties properties = new DescriptorProperties();
+    public HiveCatalogDescriptor hiveVersion(String hiveVersion) {
+        Preconditions.checkArgument(!StringUtils.isNullOrWhitespaceOnly(hiveVersion));
+        this.hiveVersion = hiveVersion;
+        return this;
+    }
 
-		if (hiveSitePath != null) {
-			properties.putString(CATALOG_HIVE_SITE_PATH, hiveSitePath);
-		}
+    @Override
+    protected Map<String, String> toCatalogProperties() {
+        final DescriptorProperties properties = new DescriptorProperties();
 
-		return properties.asMap();
-	}
+        if (hiveSitePath != null) {
+            properties.putString(CATALOG_HIVE_CONF_DIR, hiveSitePath);
+        }
+
+        if (hiveVersion != null) {
+            properties.putString(CATALOG_HIVE_VERSION, hiveVersion);
+        }
+
+        return properties.asMap();
+    }
 }

@@ -27,6 +27,7 @@ import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.runtime.streamstatus.StreamStatusMaintainer;
+import org.apache.flink.streaming.runtime.tasks.OperatorChain;
 import org.apache.flink.streaming.runtime.tasks.ProcessingTimeCallback;
 import org.apache.flink.streaming.runtime.tasks.ProcessingTimeService;
 
@@ -39,144 +40,187 @@ import java.util.concurrent.ScheduledFuture;
  * @param <SRC> Type of the source function of this stream source operator
  */
 @Internal
-public class StreamSource<OUT, SRC extends SourceFunction<OUT>> extends AbstractUdfStreamOperator<OUT, SRC> {
+public class StreamSource<OUT, SRC extends SourceFunction<OUT>>
+        extends AbstractUdfStreamOperator<OUT, SRC> {
 
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	private transient SourceFunction.SourceContext<OUT> ctx;
+    private transient SourceFunction.SourceContext<OUT> ctx;
 
-	private transient volatile boolean canceledOrStopped = false;
+    private transient volatile boolean canceledOrStopped = false;
 
-	private transient volatile boolean hasSentMaxWatermark = false;
+    private transient volatile boolean hasSentMaxWatermark = false;
 
-	public StreamSource(SRC sourceFunction) {
-		super(sourceFunction);
+    public StreamSource(SRC sourceFunction) {
+        super(sourceFunction);
 
-		this.chainingStrategy = ChainingStrategy.HEAD;
-	}
+        this.chainingStrategy = ChainingStrategy.HEAD;
+    }
 
-	public void run(final Object lockingObject, final StreamStatusMaintainer streamStatusMaintainer) throws Exception {
-		run(lockingObject, streamStatusMaintainer, output);
-	}
+    public void run(
+            final Object lockingObject,
+            final StreamStatusMaintainer streamStatusMaintainer,
+            final OperatorChain<?, ?> operatorChain)
+            throws Exception {
 
-	public void run(final Object lockingObject,
-			final StreamStatusMaintainer streamStatusMaintainer,
-			final Output<StreamRecord<OUT>> collector) throws Exception {
+        run(lockingObject, streamStatusMaintainer, output, operatorChain);
+    }
 
-		final TimeCharacteristic timeCharacteristic = getOperatorConfig().getTimeCharacteristic();
+    public void run(
+            final Object lockingObject,
+            final StreamStatusMaintainer streamStatusMaintainer,
+            final Output<StreamRecord<OUT>> collector,
+            final OperatorChain<?, ?> operatorChain)
+            throws Exception {
 
-		final Configuration configuration = this.getContainingTask().getEnvironment().getTaskManagerInfo().getConfiguration();
-		final long latencyTrackingInterval = getExecutionConfig().isLatencyTrackingConfigured()
-			? getExecutionConfig().getLatencyTrackingInterval()
-			: configuration.getLong(MetricOptions.LATENCY_INTERVAL);
+        final TimeCharacteristic timeCharacteristic = getOperatorConfig().getTimeCharacteristic();
 
-		LatencyMarksEmitter<OUT> latencyEmitter = null;
-		if (latencyTrackingInterval > 0) {
-			latencyEmitter = new LatencyMarksEmitter<>(
-				getProcessingTimeService(),
-				collector,
-				latencyTrackingInterval,
-				this.getOperatorID(),
-				getRuntimeContext().getIndexOfThisSubtask());
-		}
+        final Configuration configuration =
+                this.getContainingTask().getEnvironment().getTaskManagerInfo().getConfiguration();
+        final long latencyTrackingInterval =
+                getExecutionConfig().isLatencyTrackingConfigured()
+                        ? getExecutionConfig().getLatencyTrackingInterval()
+                        : configuration.getLong(MetricOptions.LATENCY_INTERVAL);
 
-		final long watermarkInterval = getRuntimeContext().getExecutionConfig().getAutoWatermarkInterval();
+        LatencyMarksEmitter<OUT> latencyEmitter = null;
+        if (latencyTrackingInterval > 0) {
+            latencyEmitter =
+                    new LatencyMarksEmitter<>(
+                            getProcessingTimeService(),
+                            collector,
+                            latencyTrackingInterval,
+                            this.getOperatorID(),
+                            getRuntimeContext().getIndexOfThisSubtask());
+        }
 
-		this.ctx = StreamSourceContexts.getSourceContext(
-			timeCharacteristic,
-			getProcessingTimeService(),
-			lockingObject,
-			streamStatusMaintainer,
-			collector,
-			watermarkInterval,
-			-1);
+        final long watermarkInterval =
+                getRuntimeContext().getExecutionConfig().getAutoWatermarkInterval();
 
-		try {
-			userFunction.run(ctx);
+        this.ctx =
+                StreamSourceContexts.getSourceContext(
+                        timeCharacteristic,
+                        getProcessingTimeService(),
+                        lockingObject,
+                        streamStatusMaintainer,
+                        collector,
+                        watermarkInterval,
+                        -1);
 
-			// if we get here, then the user function either exited after being done (finite source)
-			// or the function was canceled or stopped. For the finite source case, we should emit
-			// a final watermark that indicates that we reached the end of event-time
-			if (!isCanceledOrStopped()) {
-				advanceToEndOfEventTime();
-			}
-		} finally {
-			// make sure that the context is closed in any case
-			ctx.close();
-			if (latencyEmitter != null) {
-				latencyEmitter.close();
-			}
-		}
-	}
+        try {
+            userFunction.run(ctx);
 
-	public void advanceToEndOfEventTime() {
-		if (!hasSentMaxWatermark) {
-			ctx.emitWatermark(Watermark.MAX_WATERMARK);
-			hasSentMaxWatermark = true;
-		}
-	}
+            // if we get here, then the user function either exited after being done (finite source)
+            // or the function was canceled or stopped. For the finite source case, we should emit
+            // a final watermark that indicates that we reached the end of event-time, and end
+            // inputs
+            // of the operator chain
+            if (!isCanceledOrStopped()) {
+                // in theory, the subclasses of StreamSource may implement the BoundedOneInput
+                // interface,
+                // so we still need the following call to end the input
+                synchronized (lockingObject) {
+                    operatorChain.endInput(1);
+                }
+            }
+        } finally {
+            if (latencyEmitter != null) {
+                latencyEmitter.close();
+            }
+        }
+    }
 
-	public void cancel() {
-		// important: marking the source as stopped has to happen before the function is stopped.
-		// the flag that tracks this status is volatile, so the memory model also guarantees
-		// the happens-before relationship
-		markCanceledOrStopped();
-		userFunction.cancel();
+    public void advanceToEndOfEventTime() {
+        if (!hasSentMaxWatermark) {
+            ctx.emitWatermark(Watermark.MAX_WATERMARK);
+            hasSentMaxWatermark = true;
+        }
+    }
 
-		// the context may not be initialized if the source was never running.
-		if (ctx != null) {
-			ctx.close();
-		}
-	}
+    @Override
+    public void close() throws Exception {
+        try {
+            super.close();
+            if (!isCanceledOrStopped() && ctx != null) {
+                advanceToEndOfEventTime();
+            }
+        } finally {
+            // make sure that the context is closed in any case
+            if (ctx != null) {
+                ctx.close();
+            }
+        }
+    }
 
-	/**
-	 * Marks this source as canceled or stopped.
-	 *
-	 * <p>This indicates that any exit of the {@link #run(Object, StreamStatusMaintainer, Output)} method
-	 * cannot be interpreted as the result of a finite source.
-	 */
-	protected void markCanceledOrStopped() {
-		this.canceledOrStopped = true;
-	}
+    public void cancel() {
+        // important: marking the source as stopped has to happen before the function is stopped.
+        // the flag that tracks this status is volatile, so the memory model also guarantees
+        // the happens-before relationship
+        markCanceledOrStopped();
+        userFunction.cancel();
 
-	/**
-	 * Checks whether the source has been canceled or stopped.
-	 * @return True, if the source is canceled or stopped, false is not.
-	 */
-	protected boolean isCanceledOrStopped() {
-		return canceledOrStopped;
-	}
+        // the context may not be initialized if the source was never running.
+        if (ctx != null) {
+            ctx.close();
+        }
+    }
 
-	private static class LatencyMarksEmitter<OUT> {
-		private final ScheduledFuture<?> latencyMarkTimer;
+    /**
+     * Marks this source as canceled or stopped.
+     *
+     * <p>This indicates that any exit of the {@link #run(Object, StreamStatusMaintainer, Output)}
+     * method cannot be interpreted as the result of a finite source.
+     */
+    protected void markCanceledOrStopped() {
+        this.canceledOrStopped = true;
+    }
 
-		public LatencyMarksEmitter(
-				final ProcessingTimeService processingTimeService,
-				final Output<StreamRecord<OUT>> output,
-				long latencyTrackingInterval,
-				final OperatorID operatorId,
-				final int subtaskIndex) {
+    /**
+     * Checks whether the source has been canceled or stopped.
+     *
+     * @return True, if the source is canceled or stopped, false is not.
+     */
+    protected boolean isCanceledOrStopped() {
+        return canceledOrStopped;
+    }
 
-			latencyMarkTimer = processingTimeService.scheduleAtFixedRate(
-				new ProcessingTimeCallback() {
-					@Override
-					public void onProcessingTime(long timestamp) throws Exception {
-						try {
-							// ProcessingTimeService callbacks are executed under the checkpointing lock
-							output.emitLatencyMarker(new LatencyMarker(processingTimeService.getCurrentProcessingTime(), operatorId, subtaskIndex));
-						} catch (Throwable t) {
-							// we catch the Throwables here so that we don't trigger the processing
-							// timer services async exception handler
-							LOG.warn("Error while emitting latency marker.", t);
-						}
-					}
-				},
-				0L,
-				latencyTrackingInterval);
-		}
+    private static class LatencyMarksEmitter<OUT> {
+        private final ScheduledFuture<?> latencyMarkTimer;
 
-		public void close() {
-			latencyMarkTimer.cancel(true);
-		}
-	}
+        public LatencyMarksEmitter(
+                final ProcessingTimeService processingTimeService,
+                final Output<StreamRecord<OUT>> output,
+                long latencyTrackingInterval,
+                final OperatorID operatorId,
+                final int subtaskIndex) {
+
+            latencyMarkTimer =
+                    processingTimeService.scheduleWithFixedDelay(
+                            new ProcessingTimeCallback() {
+                                @Override
+                                public void onProcessingTime(long timestamp) throws Exception {
+                                    try {
+                                        // ProcessingTimeService callbacks are executed under the
+                                        // checkpointing lock
+                                        output.emitLatencyMarker(
+                                                new LatencyMarker(
+                                                        processingTimeService
+                                                                .getCurrentProcessingTime(),
+                                                        operatorId,
+                                                        subtaskIndex));
+                                    } catch (Throwable t) {
+                                        // we catch the Throwables here so that we don't trigger the
+                                        // processing
+                                        // timer services async exception handler
+                                        LOG.warn("Error while emitting latency marker.", t);
+                                    }
+                                }
+                            },
+                            0L,
+                            latencyTrackingInterval);
+        }
+
+        public void close() {
+            latencyMarkTimer.cancel(true);
+        }
+    }
 }
